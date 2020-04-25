@@ -3,11 +3,11 @@ import os
 import numpy as np
 from keras.layers import Conv2D, Input, BatchNormalization, LeakyReLU, ZeroPadding2D, UpSampling2D
 from keras.layers.merge import add, concatenate
-from keras.models import Model
+from keras.models import Model, load_model
 import struct
 import cv2
 
-np.set_printoptions(threshold=np.nan)
+#np.set_printoptions(threshold=np.nan)
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
@@ -279,16 +279,25 @@ def preprocess_input(image, net_h, net_w):
 
 def decode_netout(netout, anchors, obj_thresh, nms_thresh, net_h, net_w):
     grid_h, grid_w = netout.shape[:2]
+    print('grid_h: {}'.format(grid_h))
+    print('grid_w: {}'.format(grid_w))
     nb_box = 3
+    print('netout.shape[-1]: {}'.format(netout.shape[-1]))
     netout = netout.reshape((grid_h, grid_w, nb_box, -1))
+    print('netout.shape[-1]: {}'.format(netout.shape[-1]))
     nb_class = netout.shape[-1] - 5
+    #print('netout: {}'.format(netout))
+    #print('nb_class: {}'.format(nb_class))
 
     boxes = []
-
+    #if(grid_h == 13):
+        #print('netout[..., :2]: {}'.format(netout[:1, :1, ..., :1]))
+        #print('netout[..., 4][..., np.newaxis]: {}'.format(netout[..., 4][..., np.newaxis]))
+    
     netout[..., :2]  = _sigmoid(netout[..., :2])
     netout[..., 4:]  = _sigmoid(netout[..., 4:])
     netout[..., 5:]  = netout[..., 4][..., np.newaxis] * netout[..., 5:]
-    netout[..., 5:] *= netout[..., 5:] > obj_thresh
+    netout[..., 5:] *= netout[..., 5:] > obj_thresh # keep the value > threshold, the value <= thresh will return 0
 
     for i in range(grid_h*grid_w):
         row = i / grid_w
@@ -314,7 +323,8 @@ def decode_netout(netout, anchors, obj_thresh, nms_thresh, net_h, net_w):
             
             box = BoundBox(x-w/2, y-h/2, x+w/2, y+h/2, objectness, classes)
             #box = BoundBox(x-w/2, y-h/2, x+w/2, y+h/2, None, classes)
-
+            #print('objectness: {}'.format(objectness))
+            #print('classes: {}'.format(classes))
             boxes.append(box)
 
     return boxes
@@ -331,10 +341,14 @@ def correct_yolo_boxes(boxes, image_h, image_w, net_h, net_w):
         x_offset, x_scale = (net_w - new_w)/2./net_w, float(new_w)/net_w
         y_offset, y_scale = (net_h - new_h)/2./net_h, float(new_h)/net_h
         
-        boxes[i].xmin = int((boxes[i].xmin - x_offset) / x_scale * image_w)
-        boxes[i].xmax = int((boxes[i].xmax - x_offset) / x_scale * image_w)
-        boxes[i].ymin = int((boxes[i].ymin - y_offset) / y_scale * image_h)
-        boxes[i].ymax = int((boxes[i].ymax - y_offset) / y_scale * image_h)
+        #boxes[i].xmin = int((boxes[i].xmin - x_offset) / x_scale * image_w)
+        #boxes[i].xmax = int((boxes[i].xmax - x_offset) / x_scale * image_w)
+        #boxes[i].ymin = int((boxes[i].ymin - y_offset) / y_scale * image_h)
+        #boxes[i].ymax = int((boxes[i].ymax - y_offset) / y_scale * image_h)
+        boxes[i].xmin = (boxes[i].xmin - x_offset) / x_scale * image_w
+        boxes[i].xmax = (boxes[i].xmax - x_offset) / x_scale * image_w
+        boxes[i].ymin = (boxes[i].ymin - y_offset) / y_scale * image_h
+        boxes[i].ymax = (boxes[i].ymax - y_offset) / y_scale * image_h
         
 def do_nms(boxes, nms_thresh):
     if len(boxes) > 0:
@@ -368,16 +382,21 @@ def draw_boxes(image, boxes, labels, obj_thresh):
                 print(labels[i] + ': ' + str(box.classes[i]*100) + '%')
                 
         if label >= 0:
-            cv2.rectangle(image, (box.xmin,box.ymin), (box.xmax,box.ymax), (0,255,0), 3)
-            cv2.putText(image, 
-                        label_str + ' ' + str(box.get_score()), 
-                        (box.xmin, box.ymin - 13), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 
-                        1e-3 * image.shape[0], 
-                        (0,255,0), 2)
+            #cv2.rectangle(image, (box.xmin,box.ymin), (box.xmax,box.ymax), (0,255,0), 3)
+            print('xmin: {}'.format(box.xmin))
+            print('ymin: {}'.format(box.ymin))
+            print('xmax: {}'.format(box.xmax))
+            print('ymax: {}'.format(box.ymax))
+            # cv2.putText(image, 
+                        # label_str + ' ' + str(box.get_score()), 
+                        # (box.xmin, box.ymin - 13), 
+                        # cv2.FONT_HERSHEY_SIMPLEX, 
+                        # 1e-3 * image.shape[0], 
+                        # (0,255,0), 2)
         
     return image      
 
+    
 def _main_(args):
     weights_path = args.weights
     image_path   = args.image
@@ -397,26 +416,82 @@ def _main_(args):
               "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", \
               "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"]
 
-    # make the yolov3 model to predict 80 classes on COCO
-    yolov3 = make_yolov3_model()
-
-    # load the weights trained on COCO into the model
-    weight_reader = WeightReader(weights_path)
-    weight_reader.load_weights(yolov3)
-
+    #yolov3 = make_yolov3_model()
+    #weight_reader = WeightReader(weights_path)
+    #weight_reader.load_weights(yolov3)
+    #yolov3.save('yolov3.h5')
+    
+    yolov3 = load_model('yolov3.h5')
+    
     # preprocess the image
     image = cv2.imread(image_path)
     image_h, image_w, _ = image.shape
     new_image = preprocess_input(image, net_h, net_w)
 
+    
+    #f0= open("image_data_keras.txt","w+")
+    #for a0 in range(1):
+    #    for a in range(416):
+    #        for b in range(416):
+    #            for c in range(3):
+    #                f0.write('{:.6f}\n'.format(new_image[a0][a][b][c]))
+    #f0.close()
+    
+    print('shape: {}'.format(new_image.shape))
     # run the prediction
     yolos = yolov3.predict(new_image)
     boxes = []
-
+    
+    print([a.shape for a in yolos])
+    #print('yolos: {}'.format(yolos))
+    #print('yolos: {}'.format(yolos[0][0]))
+    #netout = yolos[0][0]
+    #netout.shape[:2]
+    #print('len(yolos): {}'.format(len(yolos)))
+    #print('netout.shape: {}'.format(netout.shape))
+    #print('netout.shape[0]: {}'.format(netout.shape[0]))
+    #print('netout.shape[1]: {}'.format(netout.shape[1]))
+    #print('netout.shape[2]: {}'.format(netout.shape[2]))
+    #print('netout.shape[3]: {}'.format(netout.shape[3]))
+    #print('netout.shape[2:1]: {}'.format(netout.shape[2:1]))
+    #print('netout.shape[:1]: {}'.format(netout.shape[:1]))
+    #print('netout.shape[1:]: {}'.format(netout.shape[1:]))
+    #print('netout.shape[:2]: {}'.format(netout.shape[:2]))
+    #print('netout.shape[2:]: {}'.format(netout.shape[2:]))
+    #print('netout.shape[0:1]: {}'.format(netout.shape[0:1]))
+    #print('netout.shape[1:2]: {}'.format(netout.shape[1:2]))
+    #print('netout.shape[0:2]: {}'.format(netout.shape[0:2]))
+    #print('netout.shape[:3]: {}'.format(netout.shape[:3]))
+    #print('netout.shape[3:]: {}'.format(netout.shape[3:]))
+    
+    # f1= open("data_13x13.txt","w+")
+    # f2= open("data_26x26.txt","w+")
+    # f3= open("data_52x52.txt","w+")
+    # netout = yolos[0][0].reshape((13, 13, 3, -1))
+    # for a in range(13):
+        # for b in range(13):
+            # for c in range(3):
+                # for d in range(85):
+                    # f1.write('{}\n'.format(netout[a][b][c][d]))
+    # netout = yolos[1][0].reshape((26, 26, 3, -1))
+    # for a in range(26):
+        # for b in range(26):
+            # for c in range(3):
+                # for d in range(85):
+                    # f2.write('{}\n'.format(netout[a][b][c][d]))
+    # netout = yolos[2][0].reshape((52, 52, 3, -1))
+    # for a in range(52):
+        # for b in range(52):
+            # for c in range(3):
+                # for d in range(85):
+                    # f3.write('{}\n'.format(netout[a][b][c][d]))
+    # f1.close()
+    # f2.close()
+    # f3.close()
+    
     for i in range(len(yolos)):
         # decode the output of the network
         boxes += decode_netout(yolos[i][0], anchors[i], obj_thresh, nms_thresh, net_h, net_w)
-
     # correct the sizes of the bounding boxes
     correct_yolo_boxes(boxes, image_h, image_w, net_h, net_w)
 
@@ -425,7 +500,7 @@ def _main_(args):
 
     # draw bounding boxes on the image using labels
     draw_boxes(image, boxes, labels, obj_thresh) 
- 
+    
     # write the image with bounding boxes to file
     cv2.imwrite(image_path[:-4] + '_detected' + image_path[-4:], (image).astype('uint8')) 
 
